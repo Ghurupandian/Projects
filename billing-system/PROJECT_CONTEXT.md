@@ -55,3 +55,52 @@ WHAT I WANT FROM YOU NOW
 2. List every ambiguity or open question you still have (numbered). If none, say "No open questions".
 3. Propose the phase plan (for example: schema, usage endpoint, caching, billing logic, jobs, dashboard, tests, README).
 Then STOP and wait. Do not write code.
+
+
+
+## Confirmed Decisions
+## Questions
+1. **Idempotency Key & Customer Identifier Location**: Should the idempotency key be passed as an HTTP header (e.g., `Idempotency-Key`) or in the JSON payload body (`idempotency_key`)? Similarly, is the customer identifier an internal database ID or a merchant's external string identifier (e.g., `merchant_customer_id`)?
+2. **Dashboard Tenant Authorization**: Should `GET /merchants/{id}/dashboard` enforce that `{id}` matches the merchant authenticated by `X-API-Key` (returning `403 Forbidden` on mismatch)?
+3. **Usage Ingestion Semantics**: Does `POST /usage` accept an arbitrary positive unit delta for a given timestamp/date (e.g. `{"units": 25, "recorded_at": "..."}`), with raw event logging and separate daily aggregation, or does it increment a daily customer usage record directly?
+4. **Subscription Structure**: Is a customer restricted to at most one active subscription at a time per merchant, and is the plan change triggered via an API endpoint or via a dedicated service/action?
+5. **Segment Persistence**: For mid-cycle plan switches, do you prefer a dedicated table (e.g., `subscription_segments` or `subscription_histories`) tracking `[subscription_id, plan_id, starts_at, ends_at]`?
+
+## Answers to questions:
+1. Idempotency key goes in the HTTP header "Idempotency-Key". The customer is identified by the merchant's own external string ID (field: customer_reference), unique per merchant. Our internal IDs are never exposed to merchants.
+
+2. Yes. GET /merchants/{id}/dashboard must enforce that {id} matches the merchant authenticated by X-API-Key. Return 403 on mismatch.
+
+3. POST /usage accepts a positive integer "units" and an "occurred_at" timestamp (defaults to now). Every call is stored as a raw usage event. A separate job aggregates raw events into a daily usage table per customer. Billing reads from the daily table.
+
+4. A customer has at most one active subscription per merchant at a time. Plan changes are done through a dedicated ChangePlanAction (used by tests and seeders). No public endpoint for it unless we have time at the end.
+
+5. Yes, use a dedicated table for segments (e.g. subscription_segments with subscription_id, plan_id, starts_at, ends_at), as you proposed.
+
+
+## Phase Plan
+- **Phase 1: Database Schema & Architecture Design**
+  - Propose table names, columns, indexes, and foreign keys.
+  - Formulate the 5M+ row scalability and partitioning strategy for usage events.
+  - Review and approve naming before migration creation.
+- **Phase 2: Authentication, Tenant Context & Plan Caching**
+  - API key middleware with rate limiting (120 req/min).
+  - Plan retrieval service with versioned file-cache keys and invalidation event listeners.
+- **Phase 3: High-Throughput Usage Ingestion (`POST /usage`)**
+  - Form request, DTO, and API resource.
+  - Idempotent event ingestion pipeline (handling duplicates and replay responses).
+- **Phase 4: Billing & Proration Calculation Engine**
+  - Pure domain service calculating cycle segments, prorated base fees, prorated allowances, and overage math.
+- **Phase 5: Queued Invoicing & Usage Aggregation Jobs**
+  - Chunked background jobs for aggregation and invoice generation with itemized line items.
+  - Domain events (e.g., `InvoiceGenerated`).
+- **Phase 6: Merchant Dashboard API (`GET /merchants/{id}/dashboard`)**
+  - Analytics action computing top 5 customers MTD, linear overage projection, and >50% MoM churn comparison.
+- **Phase 7: Automated Test Suite (PHPUnit)**
+  - Unit & Feature tests covering proration, overage, plan transitions, idempotency replays, and dashboard metrics.
+- **Phase 8: Documentation & README**
+  - Architecture overview, setup/execution steps, assumptions, trade-offs, and future scaling considerations.
+
+
+
+Last completed step: none yet
