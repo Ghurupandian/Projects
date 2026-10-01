@@ -103,4 +103,127 @@ Then STOP and wait. Do not write code.
 
 
 
-Last completed step: none yet
+## Phase 1 Approved Schema & Architectural Decisions
+
+### 1. Schema Definition
+
+#### `merchants`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `name`: `VARCHAR(255)`
+- `api_key_hash`: `VARCHAR(64) UNIQUE` (SHA-256 hash of API key; plain key shown only once)
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+
+#### `plans`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `merchant_id`: `BIGINT UNSIGNED` (FK -> `merchants.id` ON DELETE CASCADE)
+- `name`: `VARCHAR(255)`
+- `billing_cycle`: `VARCHAR(50) DEFAULT 'monthly'`
+- `base_price_paise`: `BIGINT UNSIGNED`
+- `included_units`: `BIGINT UNSIGNED`
+- `overage_rate_paise`: `BIGINT UNSIGNED`
+- `is_active`: `BOOLEAN DEFAULT TRUE`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**: `[merchant_id, is_active]`, Unique: `[merchant_id, name]`
+
+#### `customers`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `merchant_id`: `BIGINT UNSIGNED` (FK -> `merchants.id` ON DELETE CASCADE)
+- `customer_reference`: `VARCHAR(100)` (Merchant's external customer string ID)
+- `name`: `VARCHAR(255) NULLABLE`
+- `email`: `VARCHAR(255) NULLABLE`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**: Unique: `[merchant_id, customer_reference]`, Index: `[merchant_id]`
+
+#### `subscriptions`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `merchant_id`: `BIGINT UNSIGNED` (FK -> `merchants.id` ON DELETE CASCADE)
+- `customer_id`: `BIGINT UNSIGNED` (FK -> `customers.id` ON DELETE CASCADE)
+- `current_plan_id`: `BIGINT UNSIGNED` (FK -> `plans.id` ON DELETE RESTRICT; denormalized shortcut)
+- `status`: `VARCHAR(50) DEFAULT 'active'`
+- `starts_at`: `DATE`
+- `ends_at`: `DATE NULLABLE`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**: `[customer_id, status]`, `[merchant_id, status]`
+
+#### `subscription_segments`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `subscription_id`: `BIGINT UNSIGNED` (FK -> `subscriptions.id` ON DELETE CASCADE)
+- `plan_id`: `BIGINT UNSIGNED` (FK -> `plans.id` ON DELETE RESTRICT)
+- `starts_at`: `DATE`
+- `ends_at`: `DATE NULLABLE`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**: `[subscription_id, starts_at]`
+
+#### `usage_events`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `merchant_id`: `BIGINT UNSIGNED` (FK -> `merchants.id` ON DELETE CASCADE)
+- `customer_id`: `BIGINT UNSIGNED` (FK -> `customers.id` ON DELETE CASCADE)
+- `idempotency_key`: `VARCHAR(100)`
+- `units`: `INT UNSIGNED`
+- `occurred_at`: `DATETIME` (UTC timezone, preventing year 2038 overflow)
+- `created_at`: `DATETIME / TIMESTAMP`
+- **Indexes**:
+  - Unique: `[merchant_id, idempotency_key]`
+  - Index: `[customer_id, occurred_at]`
+
+#### `daily_usages`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `merchant_id`: `BIGINT UNSIGNED` (FK -> `merchants.id` ON DELETE CASCADE)
+- `customer_id`: `BIGINT UNSIGNED` (FK -> `customers.id` ON DELETE CASCADE)
+- `usage_date`: `DATE`
+- `total_units`: `BIGINT UNSIGNED`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**:
+  - Unique: `[customer_id, usage_date]`
+  - Index: `[merchant_id, usage_date]`
+
+#### `invoices`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `merchant_id`: `BIGINT UNSIGNED` (FK -> `merchants.id` ON DELETE CASCADE)
+- `customer_id`: `BIGINT UNSIGNED` (FK -> `customers.id` ON DELETE CASCADE)
+- `subscription_id`: `BIGINT UNSIGNED` (FK -> `subscriptions.id` ON DELETE CASCADE)
+- `invoice_number`: `VARCHAR(50) UNIQUE`
+- `cycle_start`: `DATE`
+- `cycle_end`: `DATE`
+- `base_amount_paise`: `BIGINT UNSIGNED`
+- `overage_amount_paise`: `BIGINT UNSIGNED`
+- `total_amount_paise`: `BIGINT UNSIGNED`
+- `currency`: `CHAR(3) DEFAULT 'INR'`
+- `status`: `VARCHAR(50) DEFAULT 'issued'`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**: Unique: `[subscription_id, cycle_start, cycle_end]`
+
+#### `invoice_line_items`
+- `id`: `BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY`
+- `invoice_id`: `BIGINT UNSIGNED` (FK -> `invoices.id` ON DELETE CASCADE)
+- `plan_id`: `BIGINT UNSIGNED` (FK -> `plans.id` ON DELETE RESTRICT)
+- `description`: `VARCHAR(255)`
+- `segment_start`: `DATE`
+- `segment_end`: `DATE`
+- `days_in_segment`: `SMALLINT UNSIGNED`
+- `days_in_cycle`: `SMALLINT UNSIGNED`
+- `units_used`: `BIGINT UNSIGNED`
+- `units_included`: `BIGINT UNSIGNED`
+- `overage_units`: `BIGINT UNSIGNED`
+- `overage_rate_paise`: `BIGINT UNSIGNED`
+- `base_amount_paise`: `BIGINT UNSIGNED`
+- `overage_amount_paise`: `BIGINT UNSIGNED`
+- `subtotal_paise`: `BIGINT UNSIGNED`
+- `created_at`, `updated_at`: `DATETIME / TIMESTAMP`
+- **Indexes**: `[invoice_id]`
+
+---
+
+### 2. Approved Architectural Decisions
+
+1. **Timezone & Timestamps**: Store and compute everything in UTC. Use `DATETIME` (not `TIMESTAMP`) for `occurred_at` in `usage_events` to avoid the year 2038 limit.
+2. **Subscription Source of Truth**: `subscriptions.current_plan_id` is a denormalized shortcut for fast lookup. `subscription_segments` is the single source of truth for billing. Both are kept in sync inside `ChangePlanAction` within a single database transaction.
+3. **One Active Subscription Rule**: Because MySQL lacks partial unique indexes, "at most one active subscription per customer" is enforced inside application actions within a transaction using row-level locking (`lockForUpdate`).
+4. **API Key Security**: Store `merchants.api_key_hash` as a SHA-256 hash, never in plain text. Plaintext keys are revealed only once upon creation/seeding.
+5. **Daily Usage Freshness & Late Events**: A scheduled job recomputes `daily_usages` for current and previous days from `usage_events` every 5 minutes using an idempotent upsert (recompute, not increment). Right before invoice generation, the system always performs a full recompute of `daily_usages` for the entire cycle from raw `usage_events`, ensuring late events for any day in the cycle are included. After invoice generation, late events for that cycle are ignored and logged.
+6. **Plan Immutability**: Plans are immutable for billing purposes. Any pricing changes create a new plan row (marking the prior row inactive) so past segments and invoices are never mutated retroactively.
+7. **Line Item Historical Snapshots**: `invoice_line_items` persists exact snapshots of rates, units, and prorated amounts, ensuring invoices remain permanently accurate even if plans are modified or deactivated in the future.
+
+---
+
+Last completed step: Phase 1 migrations created and successfully executed against MySQL
