@@ -221,7 +221,7 @@ Then STOP and wait. Do not write code.
 3. **One Active Subscription Rule**: Because MySQL lacks partial unique indexes, "at most one active subscription per customer" is enforced inside application actions within a transaction using row-level locking (`lockForUpdate`).
 4. **API Key Security**: Store `merchants.api_key_hash` as a SHA-256 hash, never in plain text. Plaintext keys are revealed only once upon creation/seeding.
 5. **Daily Usage Freshness & Late Events**: A scheduled job recomputes `daily_usages` for current and previous days from `usage_events` every 5 minutes using an idempotent upsert (recompute, not increment). Right before invoice generation, the system always performs a full recompute of `daily_usages` for the entire cycle from raw `usage_events`, ensuring late events for any day in the cycle are included. After invoice generation, late events for that cycle are ignored and logged.
-6. **Plan Immutability**: Plans are immutable for billing purposes. Any pricing changes create a new plan row (marking the prior row inactive) so past segments and invoices are never mutated retroactively.
+6. **Plan Immutability Convention**: Plans should be treated as immutable for billing purposes. Pricing changes should create a new plan row (marking the prior row inactive). This convention is not enforced in code; past invoices retain line-item snapshots of rates, units, and prorated amounts so they remain historically accurate.
 7. **Line Item Historical Snapshots**: `invoice_line_items` persists exact snapshots of rates, units, and prorated amounts, ensuring invoices remain permanently accurate even if plans are modified or deactivated in the future.
 
 8. **Plan Caching & Invalidation Architecture**:
@@ -335,9 +335,9 @@ Phase 5A complete: exact invoice quantity numerator migration, subscription crea
 7. `RecomputeCycleDailyUsageAction` deletes stale daily aggregate rows only for the requested cycle/customer scope and upserts grouped raw events. It excludes rows for customer dates covered by an already-invoiced cycle, preserving billed daily aggregates.
 8. The existing daily aggregation job keeps its already-invoiced-cycle exclusion and warning log for late events. Usage ingestion remains unchanged and performs no invoice lookup.
 9. `routes/console.php` schedules completed-cycle invoice preparation for the first day of each month at 00:10, and continues current/previous-day aggregation every five minutes. The named schedules use `withoutOverlapping()`.
-10. `DemoDataSeeder`, called by `DatabaseSeeder`, uses bulk `insertOrIgnore` for September and October 2026 usage. It creates four customers across Starter, Pro, and Growth plans; two have October usage more than 50% below September; one has a plan change effective October 2. It generates September invoices and recomputes October daily usage for dashboard data.
+10. `DemoDataSeeder`, called by `DatabaseSeeder`, uses bulk `insertOrIgnore` for every day in the previous UTC calendar month and from the first day of the current UTC month through today. It derives the previous/current month boundaries at runtime, creates four customers across Starter, Pro, and Growth plans, makes two customers' current-month daily usage more than 50% below their previous-month daily usage, changes demo-customer-003 to Growth on the 16th of the previous month, generates previous-month invoices, and recomputes current-month daily usage. The effective date is in the past and does not violate `ChangePlanAction`'s no-future-date rule.
 11. The seeder is designed to be rerunnable: merchant, plans, customers, subscription creation, usage-event keys, and invoice uniqueness avoid duplicate demo records.
-12. The seeder's historical September invoice test exposed a calculator edge case: an open plan segment beginning after the billed cycle must be clipped out, not rejected for ending before its start. `BillingCalculationService` now skips valid segments whose start is after the cycle end.
+12. The seeder's historical invoice test exposed a calculator edge case: an open plan segment beginning after the billed cycle must be clipped out, not rejected for ending before its start. `BillingCalculationService` now skips valid segments whose start is after the cycle end.
 13. Phase 5B files:
    - Models: `app/Models/Invoice.php`, `app/Models/InvoiceLineItem.php`
    - Actions: `app/Actions/RecomputeCycleDailyUsageAction.php`, `app/Actions/GenerateSubscriptionInvoiceAction.php`
@@ -366,7 +366,18 @@ Phase 5B complete: chunked cycle invoice preparation and generation, idempotent 
 10. A merchant with no usage receives empty top/churn lists, zero cycle usage and projection, and a zero-filled 30-day trend. Customers with no prior-month usage are not considered churn risks. Mid-cycle segment allowances and usage are attributed to their date ranges.
 11. Dashboard cache TTL is 600 seconds. Keys are `merchant:{merchant_id}:dashboard:v{plans_version}:{as_of_date}`. The existing merchant plan-version counter participates in the key; successful `CreateSubscriptionAction` and `ChangePlanAction` increment it after their database transaction commits. Daily usage changes may remain cached for at most 10 minutes.
 12. `tests/Feature/MerchantDashboardTest.php` covers merchant authorization, cross-tenant data isolation, demo-data top-five/churn metrics, a maximum-six-SELECT query count including auth, day one, an ended mid-cycle segment, and an empty merchant.
+13. `GetMerchantDashboardAction` obtains the dashboard cache version and the actual active-plan list through `PlanService`; the active plan list uses the existing 10-minute versioned plan cache. `PlanService` is also used by `/api/ping`. Invoice generation deliberately reads plans associated with subscription segments from the database, not the active-plan cache, to preserve historical plan pricing for billing.
 
 ## Last completed step
 
 Phase 6 complete: authenticated merchant dashboard API with SQL-aggregated usage metrics, projection, churn risk, trends, active plans, versioned caching, and tests.
+
+## Phase 8 handoff and demo-date refresh
+
+1. `DemoDataSeeder` derives the previous and current calendar-month ranges from `CarbonImmutable::today('UTC')`: bulk usage is created for all days in the previous month and from the current month's first day through today. Previous-month invoices are generated; current-month daily usage is recomputed for the dashboard.
+2. Demo customer daily usage remains consistent month-to-month for each customer: Asha Sharma and Ravi Patel have current-month usage more than 50% below previous-month usage. Mira Iyer (`demo-customer-003`) changes from Starter to Growth on the 16th of the previous month, giving that month's invoice two line items. The seeder test freezes time at 2026-10-31 and derives its expected ranges relative to that date.
+3. README's demo walkthrough includes the SQL to inspect the seeded merchant and Mira's invoice line items. All sample timestamps are illustrative; the seeded periods are relative to the current UTC date.
+
+## Last completed step
+
+Phase 8 handoff documentation and relative-month demo seeding are updated; `DemoDataSeederTest` verifies prior-month invoices, current-month usage, churn-risk inputs, and Mira's two-segment invoice.

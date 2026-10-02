@@ -62,11 +62,7 @@ class GetMerchantDashboardAction
                 $yesterday,
             );
             $dailyUsageTrend = $this->dailyUsageTrend($merchantId, $today);
-            $activePlans = Plan::query()
-                ->where('merchant_id', $merchantId)
-                ->where('is_active', true)
-                ->orderBy('id')
-                ->get(['id', 'name', 'billing_cycle', 'base_price_paise', 'included_units', 'overage_rate_paise'])
+            $activePlans = $this->planService->getActivePlansForMerchant($merchantId)
                 ->map(static fn (Plan $plan): array => [
                     'id' => $plan->id,
                     'name' => $plan->name,

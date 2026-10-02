@@ -11,6 +11,7 @@ use App\Models\Merchant;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\SubscriptionSegment;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -19,6 +20,12 @@ class DemoDataSeeder extends Seeder
 {
     public function run(): void
     {
+        $today = CarbonImmutable::today('UTC');
+        $previousMonthStart = $today->subMonthNoOverflow()->startOfMonth();
+        $previousMonthEnd = $previousMonthStart->endOfMonth();
+        $currentMonthStart = $today->startOfMonth();
+        $midCycleChangeDate = $previousMonthStart->day(16);
+
         $plainApiKey = 'sk_live_'.Str::random(32);
         $merchant = Merchant::query()->firstOrCreate(
             ['name' => 'Acme Cloud Corp'],
@@ -30,10 +37,10 @@ class DemoDataSeeder extends Seeder
         $growth = $this->plan($merchant, 'Growth', 500000, 100000, 5);
 
         $definitions = [
-            ['reference' => 'demo-customer-001', 'name' => 'Asha Sharma', 'plan' => $starter, 'sept' => 900, 'oct' => 100],
-            ['reference' => 'demo-customer-002', 'name' => 'Ravi Patel', 'plan' => $pro, 'sept' => 1200, 'oct' => 200],
-            ['reference' => 'demo-customer-003', 'name' => 'Mira Iyer', 'plan' => $starter, 'sept' => 400, 'oct' => 600, 'change' => true],
-            ['reference' => 'demo-customer-004', 'name' => 'Dev Mehta', 'plan' => $pro, 'sept' => 3000, 'oct' => 2500],
+            ['reference' => 'demo-customer-001', 'name' => 'Asha Sharma', 'plan' => $starter, 'previous_month_units' => 900, 'current_month_units' => 100],
+            ['reference' => 'demo-customer-002', 'name' => 'Ravi Patel', 'plan' => $pro, 'previous_month_units' => 1200, 'current_month_units' => 200],
+            ['reference' => 'demo-customer-003', 'name' => 'Mira Iyer', 'plan' => $starter, 'previous_month_units' => 400, 'current_month_units' => 600, 'change' => true],
+            ['reference' => 'demo-customer-004', 'name' => 'Dev Mehta', 'plan' => $pro, 'previous_month_units' => 3000, 'current_month_units' => 2500],
         ];
 
         $subscriptions = [];
@@ -53,14 +60,14 @@ class DemoDataSeeder extends Seeder
 
             $subscription = Subscription::query()
                 ->where('customer_id', $customer->id)
-                ->whereDate('starts_at', '2026-09-01')
+                ->whereDate('starts_at', $previousMonthStart->toDateString())
                 ->first();
 
             if ($subscription === null) {
                 $subscription = app(CreateSubscriptionAction::class)->execute(
                     $customer->id,
                     $definition['plan']->id,
-                    '2026-09-01',
+                    $previousMonthStart->toDateString(),
                 );
             }
 
@@ -73,33 +80,33 @@ class DemoDataSeeder extends Seeder
                     ->firstOrFail();
 
                 if ($openSegment->plan_id !== $growth->id) {
-                    app(ChangePlanAction::class)->execute($subscription->id, $growth->id, '2026-10-02');
+                    app(ChangePlanAction::class)->execute(
+                        $subscription->id,
+                        $growth->id,
+                        $midCycleChangeDate->toDateString(),
+                    );
                 }
             }
 
-            for ($day = 1; $day <= 30; $day++) {
+            for ($day = 1; $day <= $previousMonthEnd->day; $day++) {
+                $usageDate = $previousMonthStart->day($day)->toDateString();
                 $usageRows[] = $this->usageRow(
                     (int) $merchant->id,
                     (int) $customer->id,
                     $definition['reference'],
-                    sprintf('2026-09-%02d', $day),
-                    $definition['sept'],
+                    $usageDate,
+                    $definition['previous_month_units'],
                 );
             }
 
-            foreach ([1, 2] as $day) {
-                $units = $definition['oct'];
-
-                if (($definition['change'] ?? false) && $day === 1) {
-                    $units = $definition['sept'];
-                }
-
+            for ($day = 1; $day <= $today->day; $day++) {
+                $usageDate = $currentMonthStart->day($day)->toDateString();
                 $usageRows[] = $this->usageRow(
                     (int) $merchant->id,
                     (int) $customer->id,
                     $definition['reference'],
-                    sprintf('2026-10-%02d', $day),
-                    $units,
+                    $usageDate,
+                    $definition['current_month_units'],
                 );
             }
         }
@@ -113,17 +120,25 @@ class DemoDataSeeder extends Seeder
             $subscriptions,
         );
 
-        app(RecomputeCycleDailyUsageAction::class)->execute('2026-09-01', '2026-09-30', $customerIds);
+        app(RecomputeCycleDailyUsageAction::class)->execute(
+            $previousMonthStart->toDateString(),
+            $previousMonthEnd->toDateString(),
+            $customerIds,
+        );
 
         foreach ($subscriptions as $subscription) {
             app(GenerateSubscriptionInvoiceAction::class)->execute(
                 (int) $subscription->id,
-                '2026-09-01',
-                '2026-09-30',
+                $previousMonthStart->toDateString(),
+                $previousMonthEnd->toDateString(),
             );
         }
 
-        app(RecomputeCycleDailyUsageAction::class)->execute('2026-10-01', '2026-10-31', $customerIds);
+        app(RecomputeCycleDailyUsageAction::class)->execute(
+            $currentMonthStart->toDateString(),
+            $today->endOfMonth()->toDateString(),
+            $customerIds,
+        );
 
         if ($merchant->wasRecentlyCreated) {
             $this->command?->warn("Demo API Key: {$plainApiKey}");
@@ -131,7 +146,7 @@ class DemoDataSeeder extends Seeder
             $this->command?->warn('Demo merchant already existed; its original API key is not available for display.');
         }
 
-        $this->command?->info('Demo customers, September/October usage, and September invoices are ready.');
+        $this->command?->info('Demo customers, previous/current month usage, and previous-month invoices are ready.');
     }
 
     private function plan(Merchant $merchant, string $name, int $basePaise, int $includedUnits, int $ratePaise): Plan
