@@ -231,6 +231,24 @@ class BillingCalculationServiceTest extends TestCase
         $this->assertSame(0, $result->totalAmountPaise);
     }
 
+    public function test_clips_out_plan_segment_starting_after_billed_cycle(): void
+    {
+        $result = $this->calculate(
+            '2026-10-01',
+            '2026-10-31',
+            '2026-10-01',
+            null,
+            [
+                new BillingSegmentInput(1, '2026-10-01', '2026-10-31', 3100, 0, 0),
+                new BillingSegmentInput(2, '2026-11-01', null, 6200, 0, 0),
+            ],
+        );
+
+        $this->assertCount(1, $result->segments);
+        $this->assertSame(1, $result->segments[0]->planId);
+        $this->assertSame(3100, $result->totalAmountPaise);
+    }
+
     public function test_rejects_a_gap_in_plan_segment_coverage(): void
     {
         $this->expectException(InvalidArgumentException::class);

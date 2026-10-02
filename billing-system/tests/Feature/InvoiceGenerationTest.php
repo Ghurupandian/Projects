@@ -17,6 +17,7 @@ use App\Models\UsageEvent;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 use Tests\TestCase;
 
 class InvoiceGenerationTest extends TestCase
@@ -125,11 +126,35 @@ class InvoiceGenerationTest extends TestCase
         $this->usage($otherMerchant, $goodCustomer, '2026-10-01', 15);
 
         Log::spy();
-        $this->runInvoiceChunk([$failedSubscription, $goodSubscription]);
+        try {
+            $this->runInvoiceChunk([$failedSubscription, $goodSubscription]);
+            $this->fail('Expected the chunk to report its failed subscription for retry.');
+        } catch (RuntimeException $exception) {
+            $this->assertStringContainsString((string) $failedSubscription->id, $exception->getMessage());
+        }
 
         $this->assertDatabaseMissing('invoices', ['subscription_id' => $failedSubscription->id]);
         $this->assertDatabaseHas('invoices', ['subscription_id' => $goodSubscription->id]);
         Log::shouldHaveReceived('error')->once();
+
+        $failedSubscription->segments()->whereNull('ends_at')->update(['starts_at' => '2026-09-01']);
+        $this->runInvoiceChunk([$failedSubscription, $goodSubscription]);
+
+        $this->assertSame(1, Invoice::query()->where('subscription_id', $failedSubscription->id)->count());
+        $this->assertSame(1, Invoice::query()->where('subscription_id', $goodSubscription->id)->count());
+    }
+
+    public function test_subscription_with_no_active_days_in_cycle_gets_no_invoice(): void
+    {
+        [$merchant, $customer, $plan, $subscription] = $this->subscribedCustomer([], '2026-11-01');
+
+        $this->runInvoiceChunk($subscription);
+
+        $this->assertDatabaseMissing('invoices', [
+            'subscription_id' => $subscription->id,
+            'cycle_start' => '2026-10-01',
+            'cycle_end' => '2026-10-31',
+        ]);
     }
 
     /**

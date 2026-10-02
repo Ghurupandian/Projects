@@ -24,7 +24,7 @@ class GenerateSubscriptionInvoiceAction
         }
 
         try {
-            return DB::transaction(function () use ($subscriptionId, $cycleStart, $cycleEnd): ?Invoice {
+            $invoice = DB::transaction(function () use ($subscriptionId, $cycleStart, $cycleEnd): ?Invoice {
                 if ($this->findInvoice($subscriptionId, $cycleStart, $cycleEnd) !== null) {
                     return null;
                 }
@@ -63,6 +63,10 @@ class GenerateSubscriptionInvoiceAction
                     segments: $segments,
                     dailyUsages: $dailyUsages,
                 ));
+
+                if ($calculation->segments === []) {
+                    return null;
+                }
 
                 $invoice = Invoice::query()->create([
                     'merchant_id' => $subscription->merchant_id,
@@ -107,10 +111,14 @@ class GenerateSubscriptionInvoiceAction
                     ]);
                 }
 
-                event(new InvoiceGenerated($invoice));
-
                 return $invoice;
             });
+
+            if ($invoice !== null) {
+                event(new InvoiceGenerated($invoice));
+            }
+
+            return $invoice;
         } catch (QueryException $exception) {
             if ($this->findInvoice($subscriptionId, $cycleStart, $cycleEnd) !== null) {
                 return null;

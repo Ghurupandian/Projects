@@ -328,9 +328,9 @@ Phase 5A complete: exact invoice quantity numerator migration, subscription crea
 
 1. `PrepareCycleInvoicesJob` receives a completed calendar cycle, finds subscriptions whose active dates overlap it, and dispatches `GenerateSubscriptionInvoicesJob` chunks of 100 subscriptions.
 2. Each chunk job first fully recomputes `daily_usages` for that cycle scoped to the chunk's customers. It then processes each subscription independently through `GenerateSubscriptionInvoiceAction` in its own database transaction.
-3. Chunk jobs catch and log each subscription's invoice failure, then continue with the remaining subscriptions. Both invoice jobs use three attempts and backoff `[60, 300, 900]`.
-4. Invoice generation checks for an existing subscription/cycle invoice before loading usage or calculating. It creates the invoice and every line item in one transaction. The unique key `[subscription_id, cycle_start, cycle_end]` remains the final concurrency guard; if a duplicate insert loses a race, the already-created matching invoice is treated as a no-op.
-5. Invoice numbers are deterministic: `INV-{subscription_id}-{YYYYMM}`. `InvoiceGenerated` is dispatched only for a newly created invoice and implements after-commit dispatch.
+3. Chunk jobs catch and log each subscription's invoice failure, then continue with the remaining subscriptions. After processing all subscriptions, a chunk with failures throws an exception listing the failed subscription IDs so Laravel retries it. Already-invoiced subscriptions are skipped on retry. Both invoice jobs use three attempts and backoff `[60, 300, 900]`; the chunk job's `failed()` hook logs after final retry exhaustion.
+4. Invoice generation checks for an existing subscription/cycle invoice before loading usage or calculating. It creates the invoice and every line item in one transaction. If calculation produces no billable segments (for example, the subscription has no active days in that cycle), it returns without creating an invoice. The unique key `[subscription_id, cycle_start, cycle_end]` remains the final concurrency guard; if a duplicate insert loses a race, the already-created matching invoice is treated as a no-op.
+5. Invoice numbers are deterministic: `INV-{subscription_id}-{YYYYMM}`. `InvoiceGenerated` is dispatched only for a newly created invoice, after the invoice transaction has committed; existing-invoice and empty-calculation no-op paths do not dispatch it.
 6. `invoice_line_items.units_included_numerator` and `overage_units_numerator` contain exact quantity numerators over `days_in_cycle`. Existing `units_included` and `overage_units` columns store whole-unit display values rounded half-up using integer division/remainder.
 7. `RecomputeCycleDailyUsageAction` deletes stale daily aggregate rows only for the requested cycle/customer scope and upserts grouped raw events. It excludes rows for customer dates covered by an already-invoiced cycle, preserving billed daily aggregates.
 8. The existing daily aggregation job keeps its already-invoiced-cycle exclusion and warning log for late events. Usage ingestion remains unchanged and performs no invoice lookup.
@@ -346,6 +346,7 @@ Phase 5A complete: exact invoice quantity numerator migration, subscription crea
    - Seeders: `database/seeders/DemoDataSeeder.php`, `database/seeders/DatabaseSeeder.php`
    - Tests: `tests/Feature/InvoiceGenerationTest.php`, `tests/Feature/DemoDataSeederTest.php`
 14. Run locally with `php artisan queue:work database` and `php artisan schedule:work`.
+15. Integration tests verify invoice chunk failure isolation and retry: successful subscriptions are invoiced in the first run, the chunk reports failed subscription IDs, and a later run invoices repaired subscriptions without duplicates. Tests also verify no invoice is created for a subscription with no active cycle days.
 
 ## Last completed step
 

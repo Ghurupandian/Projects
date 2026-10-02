@@ -11,6 +11,7 @@ use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use RuntimeException;
 use Throwable;
 
 class GenerateSubscriptionInvoicesJob implements ShouldQueue
@@ -43,10 +44,13 @@ class GenerateSubscriptionInvoicesJob implements ShouldQueue
 
         $recomputeDailyUsage->execute($this->cycleStart, $this->cycleEnd, $customerIds);
 
+        $failedSubscriptionIds = [];
+
         foreach ($this->subscriptionIds as $subscriptionId) {
             try {
                 $generateInvoice->execute((int) $subscriptionId, $this->cycleStart, $this->cycleEnd);
             } catch (Throwable $exception) {
+                $failedSubscriptionIds[] = (int) $subscriptionId;
                 Log::error('Invoice generation failed for a subscription; continuing with the chunk.', [
                     'subscription_id' => $subscriptionId,
                     'cycle_start' => $this->cycleStart,
@@ -55,5 +59,21 @@ class GenerateSubscriptionInvoicesJob implements ShouldQueue
                 ]);
             }
         }
+
+        if ($failedSubscriptionIds !== []) {
+            throw new RuntimeException(
+                'Invoice generation failed for subscription IDs: '.implode(', ', $failedSubscriptionIds),
+            );
+        }
+    }
+
+    public function failed(?Throwable $exception): void
+    {
+        Log::critical('Invoice generation chunk exhausted its retries.', [
+            'subscription_ids' => $this->subscriptionIds,
+            'cycle_start' => $this->cycleStart,
+            'cycle_end' => $this->cycleEnd,
+            'exception' => $exception,
+        ]);
     }
 }
