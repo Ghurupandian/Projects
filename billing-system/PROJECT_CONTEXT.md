@@ -270,4 +270,4 @@ Models: Customer, Subscription, UsageEvent. Request: RecordUsageRequest. DTOs: U
 
 ---
 
-Last completed step: Phase 3 complete. POST /api/usage done, 10 tests passing. Next: Phase 4 (billing and proration engine).
+Phase 3 complete: idempotent POST /api/usage.
