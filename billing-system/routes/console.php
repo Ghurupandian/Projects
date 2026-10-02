@@ -1,6 +1,7 @@
 <?php
 
 use App\Jobs\AggregateDailyUsageJob;
+use App\Jobs\PrepareCycleInvoicesJob;
 use Illuminate\Foundation\Inspiring;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -15,3 +16,12 @@ Schedule::call(function (): void {
     AggregateDailyUsageJob::dispatch($today);
     AggregateDailyUsageJob::dispatch(now()->subDay()->toDateString());
 })->everyFiveMinutes()->name('aggregate-daily-usage')->withoutOverlapping();
+
+Schedule::call(function (): void {
+    $previousMonth = now()->subMonthNoOverflow();
+
+    PrepareCycleInvoicesJob::dispatch(
+        $previousMonth->copy()->startOfMonth()->toDateString(),
+        $previousMonth->copy()->endOfMonth()->toDateString(),
+    );
+})->monthlyOn(1, '00:10')->name('prepare-cycle-invoices')->withoutOverlapping();

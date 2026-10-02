@@ -206,15 +206,19 @@ class BillingCalculationService
 
             $startsAt = $this->parseDate($segment->startsAt, 'plan segment start');
             $endsAt = $segment->endsAt === null
-                ? $cycleEnd
+                ? null
                 : $this->parseDate($segment->endsAt, 'plan segment end');
 
-            if ($endsAt < $startsAt) {
+            if ($endsAt !== null && $endsAt < $startsAt) {
                 throw new InvalidArgumentException('A plan segment end date cannot precede its start date.');
             }
 
+            if ($startsAt > $cycleEnd) {
+                continue;
+            }
+
             $start = $this->maxDate($startsAt, $cycleStart);
-            $end = $this->minDate($endsAt, $cycleEnd);
+            $end = $this->minDate($endsAt ?? $cycleEnd, $cycleEnd);
 
             if ($start <= $end) {
                 $clipped[] = ['input' => $segment, 'start' => $start, 'end' => $end];

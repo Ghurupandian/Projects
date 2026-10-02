@@ -315,7 +315,7 @@ Phase 3 complete: idempotent POST /api/usage.
    - Job: `app/Jobs/AggregateDailyUsageJob.php`
    - Scheduler: `routes/console.php`
    - Tests: `tests/Feature/AggregationAndSubscriptionActionsTest.php`
-9. Phase 5B remains pending: invoice preparation and chunk jobs, invoice creation and idempotency, `InvoiceGenerated`, demo seeding, and end-to-end invoice tests.
+9. Phase 5B invoice jobs, invoice creation/idempotency, `InvoiceGenerated`, demo seeding, and end-to-end tests are complete.
 10. Add index `[occurred_at, customer_id]` to `usage_events` to support date-scoped aggregation scans and customer grouping. The additional index slightly slows usage-event inserts and increases index storage; monthly partitioning on `occurred_at` is the longer-term scaling option.
 11. `AggregateDailyUsageJob` implements `ShouldBeUnique`, keyed by usage date, so overlapping duplicate jobs for the same date are not queued. It checks cheaply for any invoice cycle covering the date before running the per-event late-event count query.
 12. `ChangePlanAction` rejects selecting the plan already assigned to the open segment.
@@ -323,3 +323,30 @@ Phase 3 complete: idempotent POST /api/usage.
 ## Last completed step
 
 Phase 5A complete: exact invoice quantity numerator migration, subscription creation and plan-change actions, chunked idempotent daily usage aggregation, five-minute scheduling, and tests.
+
+## Phase 5B decisions
+
+1. `PrepareCycleInvoicesJob` receives a completed calendar cycle, finds subscriptions whose active dates overlap it, and dispatches `GenerateSubscriptionInvoicesJob` chunks of 100 subscriptions.
+2. Each chunk job first fully recomputes `daily_usages` for that cycle scoped to the chunk's customers. It then processes each subscription independently through `GenerateSubscriptionInvoiceAction` in its own database transaction.
+3. Chunk jobs catch and log each subscription's invoice failure, then continue with the remaining subscriptions. Both invoice jobs use three attempts and backoff `[60, 300, 900]`.
+4. Invoice generation checks for an existing subscription/cycle invoice before loading usage or calculating. It creates the invoice and every line item in one transaction. The unique key `[subscription_id, cycle_start, cycle_end]` remains the final concurrency guard; if a duplicate insert loses a race, the already-created matching invoice is treated as a no-op.
+5. Invoice numbers are deterministic: `INV-{subscription_id}-{YYYYMM}`. `InvoiceGenerated` is dispatched only for a newly created invoice and implements after-commit dispatch.
+6. `invoice_line_items.units_included_numerator` and `overage_units_numerator` contain exact quantity numerators over `days_in_cycle`. Existing `units_included` and `overage_units` columns store whole-unit display values rounded half-up using integer division/remainder.
+7. `RecomputeCycleDailyUsageAction` deletes stale daily aggregate rows only for the requested cycle/customer scope and upserts grouped raw events. It excludes rows for customer dates covered by an already-invoiced cycle, preserving billed daily aggregates.
+8. The existing daily aggregation job keeps its already-invoiced-cycle exclusion and warning log for late events. Usage ingestion remains unchanged and performs no invoice lookup.
+9. `routes/console.php` schedules completed-cycle invoice preparation for the first day of each month at 00:10, and continues current/previous-day aggregation every five minutes. The named schedules use `withoutOverlapping()`.
+10. `DemoDataSeeder`, called by `DatabaseSeeder`, uses bulk `insertOrIgnore` for September and October 2026 usage. It creates four customers across Starter, Pro, and Growth plans; two have October usage more than 50% below September; one has a plan change effective October 2. It generates September invoices and recomputes October daily usage for dashboard data.
+11. The seeder is designed to be rerunnable: merchant, plans, customers, subscription creation, usage-event keys, and invoice uniqueness avoid duplicate demo records.
+12. The seeder's historical September invoice test exposed a calculator edge case: an open plan segment beginning after the billed cycle must be clipped out, not rejected for ending before its start. `BillingCalculationService` now skips valid segments whose start is after the cycle end.
+13. Phase 5B files:
+   - Models: `app/Models/Invoice.php`, `app/Models/InvoiceLineItem.php`
+   - Actions: `app/Actions/RecomputeCycleDailyUsageAction.php`, `app/Actions/GenerateSubscriptionInvoiceAction.php`
+   - Jobs: `app/Jobs/PrepareCycleInvoicesJob.php`, `app/Jobs/GenerateSubscriptionInvoicesJob.php`
+   - Event: `app/Events/InvoiceGenerated.php`
+   - Seeders: `database/seeders/DemoDataSeeder.php`, `database/seeders/DatabaseSeeder.php`
+   - Tests: `tests/Feature/InvoiceGenerationTest.php`, `tests/Feature/DemoDataSeederTest.php`
+14. Run locally with `php artisan queue:work database` and `php artisan schedule:work`.
+
+## Last completed step
+
+Phase 5B complete: chunked cycle invoice preparation and generation, idempotent invoice persistence with after-commit event, demo billing data, and end-to-end tests.
