@@ -235,4 +235,13 @@ Then STOP and wait. Do not write code.
 
 ---
 
-Last completed step: Phase 2 completed (API key auth, tenant context, 120 req/min rate limiting, versioned plan caching with observer invalidation, factories, seeder, test suite passing)
+
+## Phase 3 (in progress) - POST /usage
+Approved design: Idempotency-Key header (max 100 chars); body customer_reference, units (1 to 1,000,000), occurred_at (optional, UTC, reject more than 5 min in the future). Single INSERT, catch UniqueConstraintViolationException, then compare payload. Replay returns 200 with Idempotent-Replay: true; different payload returns 409; missing header 422; unknown customer 404; no subscription covering occurred_at date 422. Replay compares occurred_at only if the client sent it. Subscription check uses dates only (starts_at <= date and ends_at null or >= date), NOT status. Same middleware on /api/usage and /usage.
+Created so far (unverified): RecordUsageAction, RecordUsageResult, UsageEventData, RecordUsageRequest, UsageEventResource, Customer, Subscription, UsageEvent models.
+Still to do: UsageController, routes, CustomerFactory, SubscriptionFactory, tests/Feature/UsageIngestionTest.php (first call, retry, conflict, missing header, unknown customer, no subscription, future timestamp, tenant isolation, replay with omitted occurred_at).
+
+---
+
+
+Last completed step: Phase 2 complete. Phase 3 partially done (see above).
