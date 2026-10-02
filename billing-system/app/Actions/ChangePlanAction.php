@@ -5,15 +5,18 @@ namespace App\Actions;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\SubscriptionSegment;
+use App\Services\PlanService;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class ChangePlanAction
 {
+    public function __construct(private readonly PlanService $planService) {}
+
     public function execute(int $subscriptionId, int $newPlanId, string $effectiveDate): Subscription
     {
-        return DB::transaction(function () use ($subscriptionId, $newPlanId, $effectiveDate): Subscription {
+        $subscription = DB::transaction(function () use ($subscriptionId, $newPlanId, $effectiveDate): Subscription {
             $subscription = Subscription::query()->lockForUpdate()->findOrFail($subscriptionId);
             $newPlan = Plan::query()->findOrFail($newPlanId);
 
@@ -84,6 +87,10 @@ class ChangePlanAction
 
             return $subscription->refresh();
         });
+
+        $this->planService->invalidatePlanCache($subscription->merchant_id);
+
+        return $subscription;
     }
 
     private function parseEffectiveDate(string $effectiveDate): CarbonImmutable

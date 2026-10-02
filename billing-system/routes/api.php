@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\MerchantDashboardController;
 use App\Http\Controllers\Api\UsageController;
 use App\Services\PlanService;
 use App\Services\TenantContext;
@@ -33,4 +34,6 @@ Route::middleware(['auth.api_key', 'throttle:api-key'])->group(function () {
 
     // POST /api/usage  — primary route (API prefix added by Laravel api route file)
     Route::post('/usage', [UsageController::class, 'store']);
+    Route::get('/merchants/{id}/dashboard', [MerchantDashboardController::class, 'show'])
+        ->whereNumber('id');
 });

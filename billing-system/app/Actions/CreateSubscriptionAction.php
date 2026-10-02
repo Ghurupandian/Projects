@@ -5,14 +5,17 @@ namespace App\Actions;
 use App\Models\Customer;
 use App\Models\Plan;
 use App\Models\Subscription;
+use App\Services\PlanService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class CreateSubscriptionAction
 {
+    public function __construct(private readonly PlanService $planService) {}
+
     public function execute(int $customerId, int $planId, string $startsAt): Subscription
     {
-        return DB::transaction(function () use ($customerId, $planId, $startsAt): Subscription {
+        $subscription = DB::transaction(function () use ($customerId, $planId, $startsAt): Subscription {
             $customer = Customer::query()->lockForUpdate()->findOrFail($customerId);
             $plan = Plan::query()->findOrFail($planId);
 
@@ -54,5 +57,9 @@ class CreateSubscriptionAction
 
             return $subscription;
         });
+
+        $this->planService->invalidatePlanCache($subscription->merchant_id);
+
+        return $subscription;
     }
 }

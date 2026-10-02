@@ -351,3 +351,22 @@ Phase 5A complete: exact invoice quantity numerator migration, subscription crea
 ## Last completed step
 
 Phase 5B complete: chunked cycle invoice preparation and generation, idempotent invoice persistence with after-commit event, demo billing data, and end-to-end tests.
+
+## Phase 6 decisions
+
+1. The JSON endpoint is `GET /api/merchants/{id}/dashboard`, protected by `auth.api_key` and the existing API-key throttle. The controller compares `{id}` to the authenticated merchant and returns 403 on mismatch.
+2. The controller is thin; `GetMerchantDashboardAction` performs SQL aggregation and caching, `MerchantDashboardData` carries the result, and `MerchantDashboardResource` returns the response without a `data` wrapper.
+3. Dashboard response fields are `merchant_id`, `period`, `top_customers`, `projected_overage_revenue_paise`, `current_cycle_usage`, `churn_risk_customers`, `daily_usage_trend`, and `active_plans`. Top customers expose an integer `included_units` rounded half-up for display and numeric `allowance_percent`; the exact allowance numerator remains internal to calculation.
+4. All usage analytics read `daily_usages`, never `usage_events`. A cache-miss dashboard makes four analytics queries (segment-level current-cycle metrics, churn, daily trend, active plans) plus one merchant API-key authentication query, for five SELECTs total. A cache hit still requires the authentication query only.
+5. Query access uses the existing indexes: API-key authentication uses unique `merchants.api_key_hash`; segment metrics scope subscriptions by the leftmost `merchant_id` column of `[merchant_id, status]`, find segments with `[subscription_id, starts_at]`, and look up usage by `[customer_id, usage_date]`; churn and trend filter `[merchant_id, usage_date]`; active plans filter `[merchant_id, is_active]`. No query filters subscriptions by status; subscription date ranges determine applicability.
+6. Top-five MTD usage includes today and ranks customers by usage. Included units represent the full cycle allowance summed across the subscription's plan segments, prorated by segment days; `allowance_percent` is MTD usage divided by that full-cycle allowance times 100.
+7. Current-cycle usage includes today and is reported against the full-cycle included allowance. The daily trend contains the last 30 calendar dates through today, including zero-valued days.
+8. Churn and projection use completed days only through yesterday. Churn compares the same day range in the previous month, clamped to that month's final date; only customers with previous usage greater than zero and current usage strictly below half of previous usage are included. Day one has no churn calculation and returns zero projected overage.
+9. Projection is calculated by plan segment. Closed segments use actual observed segment usage without extrapolation. The open segment extrapolates completed-day usage over its full active cycle-segment duration, compares that estimate with its exact segment-prorated allowance, applies that plan's overage rate, rounds half-up per segment, and sums integer paise.
+10. A merchant with no usage receives empty top/churn lists, zero cycle usage and projection, and a zero-filled 30-day trend. Customers with no prior-month usage are not considered churn risks. Mid-cycle segment allowances and usage are attributed to their date ranges.
+11. Dashboard cache TTL is 600 seconds. Keys are `merchant:{merchant_id}:dashboard:v{plans_version}:{as_of_date}`. The existing merchant plan-version counter participates in the key; successful `CreateSubscriptionAction` and `ChangePlanAction` increment it after their database transaction commits. Daily usage changes may remain cached for at most 10 minutes.
+12. `tests/Feature/MerchantDashboardTest.php` covers merchant authorization, cross-tenant data isolation, demo-data top-five/churn metrics, a maximum-six-SELECT query count including auth, day one, an ended mid-cycle segment, and an empty merchant.
+
+## Last completed step
+
+Phase 6 complete: authenticated merchant dashboard API with SQL-aggregated usage metrics, projection, churn risk, trends, active plans, versioned caching, and tests.
