@@ -54,7 +54,7 @@ class RecordUsageAction
                 'customer_id' => $customerId,
                 'idempotency_key' => $dto->idempotencyKey,
                 'units' => $dto->units,
-                'occurred_at' => $dto->occurredAt->toDateTimeString(),
+                'occurred_at' => $dto->occurredAt,
                 'created_at' => now()->utc(),
             ]);
 
