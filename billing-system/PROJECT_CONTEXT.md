@@ -224,6 +224,15 @@ Then STOP and wait. Do not write code.
 6. **Plan Immutability**: Plans are immutable for billing purposes. Any pricing changes create a new plan row (marking the prior row inactive) so past segments and invoices are never mutated retroactively.
 7. **Line Item Historical Snapshots**: `invoice_line_items` persists exact snapshots of rates, units, and prorated amounts, ensuring invoices remain permanently accurate even if plans are modified or deactivated in the future.
 
+8. **Plan Caching & Invalidation Architecture**:
+   - Version counter key (`merchant:{merchant_id}:plans_version`) is stored forever.
+   - Plan data cache keys (`merchant:{merchant_id}:plan:{plan_id}:v{version}` and `merchant:{merchant_id}:active_plans:v{version}`) have a 10-minute TTL.
+   - `PlanObserver` dispatches `PlanChanged` on create, update, and delete, triggering `InvalidatePlanCacheListener` to increment the version counter.
+   - Note on driver atomicity: `Cache::increment` on the file driver is non-atomic and subject to race conditions under concurrent updates, but becomes fully atomic when configured to Redis via `.env`.
+9. **Authentication & Rate Limiting Priority**:
+   - `AuthenticateApiKey` runs ahead of `ThrottleRequests` in middleware priority, ensuring the merchant is authenticated and bound to `$request->attributes` before the rate limiter evaluates.
+   - The rate limiter enforces 120 requests/minute per merchant (falling back to API key / IP) and returns a JSON 429 response accompanied by a `Retry-After` header.
+
 ---
 
-Last completed step: Phase 1 migrations created and successfully executed against MySQL
+Last completed step: Phase 2 completed (API key auth, tenant context, 120 req/min rate limiting, versioned plan caching with observer invalidation, factories, seeder, test suite passing)
