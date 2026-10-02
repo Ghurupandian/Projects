@@ -29,7 +29,7 @@ class GetMerchantDashboardAction
         $version = $this->planService->getPlanVersion($merchantId);
         $cacheKey = "merchant:{$merchantId}:dashboard:v{$version}:".$today->format('Y-m-d');
 
-        return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use (
+        $data = Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use (
             $merchantId,
             $today,
             $cycleStart,
@@ -37,7 +37,7 @@ class GetMerchantDashboardAction
             $yesterday,
             $daysInCycle,
             $elapsedCycleDays,
-        ): MerchantDashboardData {
+        ): array {
             $segmentRows = $this->cycleSegmentRows(
                 $merchantId,
                 $cycleStart->format('Y-m-d'),
@@ -73,7 +73,7 @@ class GetMerchantDashboardAction
                 ])
                 ->all();
 
-            return new MerchantDashboardData([
+            return [
                 'merchant_id' => $merchantId,
                 'period' => [
                     'as_of_date' => $today->format('Y-m-d'),
@@ -91,8 +91,10 @@ class GetMerchantDashboardAction
                 'churn_risk_customers' => $churnRiskCustomers,
                 'daily_usage_trend' => $dailyUsageTrend,
                 'active_plans' => $activePlans,
-            ]);
+            ];
         });
+
+        return new MerchantDashboardData($data);
     }
 
     /**

@@ -47,11 +47,15 @@ class PlanService
         $version = $this->getPlanVersion($merchantId);
         $cacheKey = "merchant:{$merchantId}:plan:{$planId}:v{$version}";
 
-        return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($merchantId, $planId) {
-            return Plan::where('merchant_id', $merchantId)
+        $attributes = Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($merchantId, $planId): array {
+            $plan = Plan::where('merchant_id', $merchantId)
                 ->where('id', $planId)
                 ->first();
+
+            return $plan?->toArray() ?? [];
         });
+
+        return $attributes === [] ? null : Plan::hydrate([$attributes])->first();
     }
 
     /**
@@ -64,10 +68,14 @@ class PlanService
         $version = $this->getPlanVersion($merchantId);
         $cacheKey = "merchant:{$merchantId}:active_plans:v{$version}";
 
-        return Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($merchantId) {
+        $attributes = Cache::remember($cacheKey, self::CACHE_TTL_SECONDS, function () use ($merchantId): array {
             return Plan::where('merchant_id', $merchantId)
                 ->where('is_active', true)
-                ->get();
+                ->get()
+                ->map(static fn (Plan $plan): array => $plan->toArray())
+                ->all();
         });
+
+        return Plan::hydrate($attributes);
     }
 }

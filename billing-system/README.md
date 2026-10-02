@@ -254,6 +254,8 @@ Allowance and overage fractions are retained as integer numerators over `days_in
 
 The version counter `merchant:{merchant_id}:plans_version` is retained indefinitely. `PlanObserver` dispatches `PlanChanged` on plan create/update/delete; `InvalidatePlanCacheListener` increments the version. `PlanService` is used by `/api/ping` to get the plan version and active plans, and by `GetMerchantDashboardAction` both to get the dashboard cache version and to load active plans through the cached active-plan list. Subscription create/change actions also invalidate the merchant version after their transaction commits.
 
+Cached values are plain arrays or scalars; model and DTO objects are rebuilt after cache reads because newer Laravel versions restrict object unserialization.
+
 The dashboard response has a 600-second TTL and key `merchant:{merchant_id}:dashboard:v{plans_version}:{as_of_date}`. Usage aggregates may therefore be stale for up to 10 minutes. Invoice calculations deliberately load persisted plan snapshots referenced by subscription segments from the database; they must use the segment's historical plan, not the currently active-plan cache. File-cache increment is not atomic under concurrent invalidations; Redis is the stronger option when that matters.
 
 ## 9. Queues and scheduling
