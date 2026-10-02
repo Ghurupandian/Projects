@@ -271,3 +271,34 @@ Models: Customer, Subscription, UsageEvent. Request: RecordUsageRequest. DTOs: U
 ---
 
 Phase 3 complete: idempotent POST /api/usage.
+
+## Phase 4 decisions
+
+1. The billing calculator is a pure domain service in `app/Services/Billing/BillingCalculationService.php`; it performs no database access and accepts DTOs only.
+2. Billing DTOs live under `app/DTOs/Billing` to match the existing Phase 3 `app/DTOs` convention.
+3. Cycle dates are the first and last date of one calendar month, inclusive. Day counts use the actual calendar month length (28, 29, 30, or 31 days). All calculations use date-only values in `YYYY-MM-DD` format.
+4. The active billing interval is the intersection of the cycle and subscription dates. Subscription start and end dates are inclusive. If there are no active dates in the cycle, return zero totals and no segments.
+5. Plan segments apply on inclusive dates; a plan change is effective on its start date and usage that date belongs to the new plan. Plan segments must continuously cover the active billing interval with no gaps or overlaps; otherwise calculation fails.
+6. Segment usage is the sum of `daily_usages.total_units` rows whose `usage_date` falls within that segment. Duplicate usage dates in the input are rejected.
+7. For cycle days `D`, segment days `d`, segment usage `U`, plan allowance `I`, base price `B` paise, and overage rate `R` paise:
+   - Allowance is the exact fraction `I * d / D`.
+   - Overage units are the exact fraction `max(0, U * D - I * d) / D`.
+   - Allowance and overage numerators share the denominator `days_in_cycle`; quantities are not rounded.
+   - Segment base amount is `B * d / D` paise, rounded to the nearest paise using half-up rounding.
+   - Segment overage amount is `R * max(0, U * D - I * d) / D` paise, rounded to the nearest paise using half-up rounding.
+   - Half-up rounding is implemented using non-negative integer division and remainder only; no floating-point values/functions are used.
+   - Base and overage amounts are rounded independently per segment; segment amounts are summed without further invoice-level rounding.
+8. Arithmetic uses checked non-negative integer operations. Calculations that exceed the supported integer range fail explicitly.
+9. The Phase 4 service, input/result DTOs, and unit tests are in:
+   - `app/Services/Billing/BillingCalculationService.php`
+   - `app/DTOs/Billing/BillingCalculationInput.php`
+   - `app/DTOs/Billing/BillingSegmentInput.php`
+   - `app/DTOs/Billing/DailyUsageInput.php`
+   - `app/DTOs/Billing/BillingCalculationResult.php`
+   - `app/DTOs/Billing/BillingSegmentResult.php`
+   - `tests/Unit/Billing/BillingCalculationServiceTest.php`
+10. Invoice persistence must be proposed separately in Phase 5: the approved schema’s integer allowance and overage unit columns cannot represent the exact fractional quantities returned by this calculator.
+
+## Last completed step
+
+Phase 4 complete: pure billing and proration calculation engine with exact fractional quantities, per-segment half-up paise rounding, validation, and unit tests.
