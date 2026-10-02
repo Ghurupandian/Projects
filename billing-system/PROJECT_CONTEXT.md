@@ -236,11 +236,38 @@ Then STOP and wait. Do not write code.
 ---
 
 
-## Phase 3 (in progress) - POST /usage
-Approved design: Idempotency-Key header (max 100 chars); body customer_reference, units (1 to 1,000,000), occurred_at (optional, UTC, reject more than 5 min in the future). Single INSERT, catch UniqueConstraintViolationException, then compare payload. Replay returns 200 with Idempotent-Replay: true; different payload returns 409; missing header 422; unknown customer 404; no subscription covering occurred_at date 422. Replay compares occurred_at only if the client sent it. Subscription check uses dates only (starts_at <= date and ends_at null or >= date), NOT status. Same middleware on /api/usage and /usage.
-Step A complete: RecordUsageAction, RecordUsageResult, UsageEventData, RecordUsageRequest, UsageEventResource, Customer/Subscription/UsageEvent models, UsageController, CustomerFactory, SubscriptionFactory, both routes registered with auth.api_key + throttle:api-key.
-Still to do (Step B): tests/Feature/UsageIngestionTest.php (first call, retry, conflict, missing header, unknown customer, no subscription, future timestamp, tenant isolation, replay with omitted occurred_at).
+## Phase 3 (complete) - POST /api/usage
+
+### Endpoint
+- Route: POST /api/usage ONLY. The /usage alias was removed because web.php applies CSRF/session middleware and API clients would get 419.
+- Middleware: auth.api_key (X-API-Key) then throttle:api-key (120 req/min per merchant).
+- Headers: X-API-Key, Idempotency-Key (required, max 100 chars), Content-Type: application/json.
+- Body: customer_reference (string), units (integer, 1 to 1,000,000), occurred_at (optional ISO timestamp).
+- Responses are NOT wrapped in "data" (JsonResource::withoutWrapping()). Output hides internal merchant_id and customer_id.
+
+### Behaviour
+- 201 Created: first successful call.
+- 200 OK + header Idempotent-Replay: true: retry with the same Idempotency-Key and same payload. Nothing is counted twice.
+- 409 Conflict: same Idempotency-Key reused with a different payload (different customer or units, or a different occurred_at if the client sent one).
+- 422: missing/too-long Idempotency-Key, validation failure, occurred_at more than 5 minutes in the future, or no subscription covering the occurred_at date.
+- 404: unknown customer_reference for this merchant (customers are NOT auto-created).
+- 401: missing or invalid API key. 429: rate limit exceeded (with Retry-After).
+
+### Design decisions and assumptions (use in README)
+1. Idempotency uses ONE insert and catches UniqueConstraintViolationException on the unique index [merchant_id, idempotency_key]. No check-then-insert (avoids race conditions). After a collision, the existing row is loaded and compared with the new payload.
+2. On replay, occurred_at is compared only if the client explicitly sent it. If omitted, only customer and units are compared. Otherwise a retry would get a new now() and wrongly return 409.
+3. occurred_at is normalized to UTC in UsageEventData. config/app.php timezone is UTC. Stored as DATETIME.
+4. Subscription coverage check uses dates only (starts_at <= date AND (ends_at IS NULL OR ends_at >= date)). It does NOT filter on status, so late events inside a cancelled subscription's valid period are still accepted and billed.
+5. Future timestamps beyond 5 minutes are rejected (allows for clock skew). Units limit of 1,000,000 per call is a sanity guard.
+6. Customer lookup uses the unique index [merchant_id, customer_reference] and selects only the id.
+7. Tenant isolation: a merchant cannot post usage for another merchant's customer (treated as unknown customer, 404).
+
+### Files
+Models: Customer, Subscription, UsageEvent. Request: RecordUsageRequest. DTOs: UsageEventData, RecordUsageResult. Action: RecordUsageAction. Resource: UsageEventResource. Controller: Api/UsageController. Factories: CustomerFactory, SubscriptionFactory. Test: tests/Feature/UsageIngestionTest.php (10 tests passing: first call, retry, conflict, missing header, unknown customer, no subscription, future timestamp, tenant isolation, replay with omitted occurred_at, offset timestamp stored as UTC).
+
+### Test setup
+- Tests run on a separate MySQL database, billing_system_test, configured in .env.testing and phpunit.xml (the php build has no pdo_sqlite). Reviewers must create this empty database before running php artisan test.
 
 ---
 
-Last completed step: Phase 3 Step A done (all files, routes, factories created — tests pending)
+Last completed step: Phase 3 complete. POST /api/usage done, 10 tests passing. Next: Phase 4 (billing and proration engine).
