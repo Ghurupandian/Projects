@@ -39,4 +39,9 @@ class Subscription extends Model
     {
         return $this->belongsTo(Plan::class, 'current_plan_id');
     }
+
+    public function segments(): HasMany
+    {
+        return $this->hasMany(SubscriptionSegment::class);
+    }
 }

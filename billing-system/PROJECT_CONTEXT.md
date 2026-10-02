@@ -299,6 +299,27 @@ Phase 3 complete: idempotent POST /api/usage.
    - `tests/Unit/Billing/BillingCalculationServiceTest.php`
 10. Invoice persistence must be proposed separately in Phase 5: the approved schema’s integer allowance and overage unit columns cannot represent the exact fractional quantities returned by this calculator.
 
+## Phase 5A decisions
+
+1. Part 5A adds a new migration only; existing migrations are not edited. The migration adds `units_included_numerator` and `overage_units_numerator` to `invoice_line_items`. Exact included and overage quantities are stored as numerator divided by the existing `days_in_cycle`; existing integer unit columns remain rounded display values.
+2. `CreateSubscriptionAction` locks the customer, enforces at most one overlapping active subscription, verifies the plan is active and belongs to the same merchant, then creates the subscription and its first open segment in one transaction.
+3. `ChangePlanAction` locks the subscription and open segment; the effective date must be strictly after the open segment start, cannot be in an already-invoiced cycle, and cannot be in the future. A valid change closes the old segment on the previous day, opens the new segment on the effective date, and updates `current_plan_id` in one transaction.
+4. `AggregateDailyUsageJob` uses the database queue, with three attempts and a backoff of 60, 300, and 900 seconds. It selects customers for a usage date in chunks of 5,000 and issues one `INSERT ... SELECT ... GROUP BY ... ON DUPLICATE KEY UPDATE` recompute per customer batch; existing totals are replaced, never incremented.
+5. Aggregation excludes a usage date for a customer if that date falls inside a cycle for which one of the customer's subscriptions already has an invoice. Excluded late events are counted and logged by the aggregation job. The usage-ingestion endpoint does not query invoices and does not log late events.
+6. A scheduler callback dispatches aggregation jobs for the current and previous UTC calendar dates every five minutes and uses `withoutOverlapping()`.
+7. The existing migration `0001_01_01_000002_create_jobs_table.php` creates `jobs`, `job_batches`, and `failed_jobs`. Locally, run the database queue worker with `php artisan queue:work database` and the scheduler with `php artisan schedule:work`.
+8. Phase 5A files:
+   - Migration: `database/migrations/2026_10_02_000010_add_exact_unit_numerators_to_invoice_line_items.php`
+   - Models: `app/Models/DailyUsage.php`, `app/Models/SubscriptionSegment.php`
+   - Actions: `app/Actions/CreateSubscriptionAction.php`, `app/Actions/ChangePlanAction.php`
+   - Job: `app/Jobs/AggregateDailyUsageJob.php`
+   - Scheduler: `routes/console.php`
+   - Tests: `tests/Feature/AggregationAndSubscriptionActionsTest.php`
+9. Phase 5B remains pending: invoice preparation and chunk jobs, invoice creation and idempotency, `InvoiceGenerated`, demo seeding, and end-to-end invoice tests.
+10. Add index `[occurred_at, customer_id]` to `usage_events` to support date-scoped aggregation scans and customer grouping. The additional index slightly slows usage-event inserts and increases index storage; monthly partitioning on `occurred_at` is the longer-term scaling option.
+11. `AggregateDailyUsageJob` implements `ShouldBeUnique`, keyed by usage date, so overlapping duplicate jobs for the same date are not queued. It checks cheaply for any invoice cycle covering the date before running the per-event late-event count query.
+12. `ChangePlanAction` rejects selecting the plan already assigned to the open segment.
+
 ## Last completed step
 
-Phase 4 complete: pure billing and proration calculation engine with exact fractional quantities, per-segment half-up paise rounding, validation, and unit tests.
+Phase 5A complete: exact invoice quantity numerator migration, subscription creation and plan-change actions, chunked idempotent daily usage aggregation, five-minute scheduling, and tests.
